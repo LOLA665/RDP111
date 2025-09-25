@@ -1,0 +1,64 @@
+name: Windows Server 2025 with Real Tailscale IP & RDP credentials
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-tailscale:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+    steps:
+      - name: Use Tailscale GitHub Action to connect
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Wait for Tailscale connection establishment
+        run: Start-Sleep -Seconds 15
+
+      - name: Display Tailscale Status and IP
+        id: tailscale_data
+        run: |
+          tailscale.exe status
+          $ip = tailscale.exe ip -4
+          Write-Host "tailscale_ip=$ip" >> $env:GITHUB_OUTPUT
+
+      - name: Create user RTXuser with real password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+          $passwordParts = $charSet.Upper | Get-Random -Count 4
+          $passwordParts += $charSet.Lower | Get-Random -Count 4
+          $passwordParts += $charSet.Number | Get-Random -Count 4
+          $passwordParts += $charSet.Special | Get-Random -Count 4
+          $password = -join ($passwordParts | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $userExists = Get-LocalUser -Name "RTXuser" -ErrorAction SilentlyContinue
+          if ($userExists) {
+            Set-LocalUser -Name "RTXuser" -Password $securePass
+          } else {
+            New-LocalUser -Name "RTXuser" -Password $securePass -AccountNeverExpires
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member "RTXuser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RTXuser"
+          echo "RDP_USERNAME=RTXuser" >> $env:GITHUB_ENV
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Display RDP credentials and Tailscale IP
+        run: |
+          Write-Host "RDP Username: $env:RDP_USERNAME"
+          Write-Host "RDP Password: $env:RDP_PASSWORD"
+          Write-Host "Tailscale IP: ${{ steps.tailscale_data.outputs.tailscale_ip }}"
+          
