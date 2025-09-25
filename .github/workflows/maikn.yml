@@ -1,0 +1,137 @@
+name: RDP Gaming Server Windows Server 2025 Small SSD
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp-smallssd:
+    runs-on: windows-2025
+    timeout-minutes: 50400 # ~35 zile
+
+    steps:
+      - name: Simulare configurare hardware
+        run: |
+          Write-Host "Simulare configurare: 16GB RAM, 100GB SSD total, ~20-30GB ocupat de OS în Windows Server 2025"
+
+      - name: Verificare versiune Windows
+        run: |
+          $version = (Get-CimInstance Win32_OperatingSystem).Caption
+          Write-Host "Versiune Windows: $version"
+          if ($version -notlike "*Server 2025*") {
+            Write-Warning "ATENȚIE: Nu este Windows Server 2025 oficial."
+          }
+
+      - name: Optimizare spatiu si performanta OS
+        run: |
+          Set-Service -Name WSearch -StartupType Disabled
+          Stop-Service -Name WSearch
+          Set-Service -Name SysMain -StartupType Disabled
+          Stop-Service -Name SysMain
+          powercfg -h off
+          Remove-Item -Path "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          cleanmgr /sagerun:1
+
+      - name: Activeaza Remote Desktop si firewall
+        run: |
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Creeaza userii RTXuser si runneradmin cu parole random
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Security
+
+          $charSet = @{
+            Upper = [char[]](65..90)
+            Lower = [char[]](97..122)
+            Number = [char[]](48..57)
+            Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+
+          function Generate-Password {
+            $rawPassword = @()
+            $rawPassword += $charSet.Upper | Get-Random -Count 4
+            $rawPassword += $charSet.Lower | Get-Random -Count 4
+            $rawPassword += $charSet.Number | Get-Random -Count 4
+            $rawPassword += $charSet.Special | Get-Random -Count 4
+            return (-join ($rawPassword | Sort-Object {Get-Random}))
+          }
+
+          $users = @("RTXuser", "runneradmin")
+          $passwords = @{}
+
+          foreach ($user in $users) {
+            try {
+              if(Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
+                Remove-LocalUser -Name $user -ErrorAction Stop
+              }
+            } catch {
+              Write-Warning "Nu s-a putut șterge userul $user: $_"
+            }
+
+            $pass = Generate-Password
+            $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
+            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -ErrorAction Stop
+            Add-LocalGroupMember -Group "Administrators" -Member $user
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
+
+            $passwords[$user] = $pass
+          }
+
+          echo "RDP_USER1=RTXuser" >> $env:GITHUB_ENV
+          echo "RDP_PASS1=$($passwords['RTXuser'])" >> $env:GITHUB_ENV
+          echo "RDP_USER2=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASS2=$($passwords['runneradmin'])" >> $env:GITHUB_ENV
+
+      - name: Optimizeaza Windows pentru gaming
+        run: |
+          Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2
+          powercfg /setactive SCHEME_MIN
+          rundll32.exe timerapi.dll,SetTimerResolution 1000,1
+
+      - name: Instaleaza Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Conecteaza Tailscale cu auth key
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-server-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retry = 0
+          while (-not $tsIP -and $retry -lt 10) {
+            Start-Sleep -Seconds 5
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $retry++
+          }
+          if (-not $tsIP) {
+            Write-Error "Nu s-a asignat IP Tailscale!"
+            exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Afiseaza datele de conectare RDP
+        run: |
+          Write-Host "=== INFORMATII ACCES RDP ==="
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host "User: $env:RDP_USER1"
+          Write-Host "Parola: $env:RDP_PASS1"
+          Write-Host "User: $env:RDP_USER2"
+          Write-Host "Parola: $env:RDP_PASS2"
+          Write-Host "============================"
+
+      - name: Pastreaza workflow-ul activ 35 zile
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date)] Server RDP ruleaza. Conecteaza-te prin IP Tailscale."
+            Start-Sleep -Seconds 300
+          }
+          
