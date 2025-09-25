@@ -1,0 +1,103 @@
+name: RDP Gaming Server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp-gaming:
+    runs-on: windows-latest
+    timeout-minutes: 50400  # ~35 zile
+
+    steps:
+      - name: Provision VM with Big Specs (Simulated)
+        run: |
+          Write-Host "Setup VM specs for gaming: 128GB RAM, 3TB SSD"
+
+      - name: Enable Remote Desktop and Firewall Rules
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+      - name: Create RTXuser with Strong Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper = [char[]](65..90)
+              Lower = [char[]](97..122)
+              Number = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object {Get-Random})
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          # Delete existing user if exists (optional cleanup)
+          if(Get-LocalUser -Name "RTXuser" -ErrorAction SilentlyContinue){
+            Remove-LocalUser -Name "RTXuser"
+          }
+
+          New-LocalUser -Name "RTXuser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RTXuser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RTXuser"
+          echo "RDP_USER=RTXuser" >> $env:GITHUB_ENV
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Optimize Windows for Gaming Performance
+        run: |
+          Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2
+          powercfg /setactive SCHEME_MIN
+          Stop-Service -Name "SysMain" -Force
+          Set-Service -Name "SysMain" -StartupType Disabled
+          Stop-Service -Name "WSearch" -Force
+          Set-Service -Name "WSearch" -StartupType Disabled
+          rundll32.exe timerapi.dll,SetTimerResolution 1000,1
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale with Auth Key
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-server-$env:GITHUB_RUN_ID
+          $tsIP = $null
+          $retry = 0
+          while (-not $tsIP -and $retry -lt 10) {
+            Start-Sleep -Seconds 5
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $retry++
+          }
+          if (-not $tsIP) {
+            Write-Error "No Tailscale IP assigned!"
+            exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Show Credentials and IP
+        run: |
+          Write-Host "=== RDP ACCESS INFORMATION ==="
+          Write-Host "IP Address (Tailscale): $env:TAILSCALE_IP"
+          Write-Host "Username: $env:RDP_USER"
+          Write-Host "Password: $env:RDP_PASSWORD"
+          Write-Host "=============================="
+
+      - name: Keep Workflow Alive for 35 Days
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date)] RDP server running. Connect via Tailscale IP."
+            Start-Sleep -Seconds 300
+          }
+          
