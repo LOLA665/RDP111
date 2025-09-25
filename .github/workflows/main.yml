@@ -1,9 +1,9 @@
-name: Windows Server 2025 with Tailscale, RDP & Gaming Setup
+name: Windows Server 2025 with Real Tailscale, RDP & Gaming Setup
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # La fiecare 6 ore
+    - cron: '0 */6 * * *'
 
 jobs:
   setup:
@@ -17,20 +17,19 @@ jobs:
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
 
     steps:
-      - name: Connect to Tailscale Tailnet
+      - name: Setup Tailscale with auth key
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          # Optional: add 'statedir' if needed, example:
-          # statedir: ./tailscale-state/
-          
-      - name: Get Tailscale IP
-        id: tailscale_ip
+
+      - name: Get Tailscale IP and status
+        id: tailscale_info
         run: |
+          tailscale.exe status
           $ip = tailscale.exe ip -4
           Write-Host "tailscale_ip=$ip" >> $env:GITHUB_OUTPUT
 
-      - name: Enable Gaming Features and Optimize Windows
+      - name: Enable Windows Gaming Features & Optimize
         run: |
           $paths = @(
             "HKLM:\SOFTWARE\Microsoft\GameBar",
@@ -60,7 +59,7 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Rule" protocol=TCP dir=in localport=3389 action=allow
           Restart-Service -Name TermService -Force
 
-      - name: Create RTXuser for RDP Access
+      - name: Create real user RTXuser for RDP
         run: |
           Add-Type -AssemblyName System.Security
           $charSet = @{
@@ -86,7 +85,7 @@ jobs:
           echo "RDP_USERNAME=RTXuser" >> $env:GITHUB_ENV
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
-      - name: Install Gaming Boost Apps
+      - name: Install Gaming boost apps
         run: |
           $apps = @(
             "https://download.razer.com/cortex/install/razer-cortex.exe",
@@ -125,7 +124,7 @@ jobs:
 
       - name: Display RDP Credentials and Tailscale IP
         run: |
-          $tailscaleIp = "${{ steps.tailscale_ip.outputs.tailscale_ip }}"
+          $tailscaleIp = "${{ steps.tailscale_info.outputs.tailscale_ip }}"
           Write-Host "Tailscale IP Address: $tailscaleIp"
           Write-Host "Username: $env:RDP_USERNAME"
           Write-Host "Password: $env:RDP_PASSWORD"
