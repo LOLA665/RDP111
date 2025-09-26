@@ -1,0 +1,118 @@
+name: RDP Gaming Server Windows Server 2025 AMD Ryzen 7 Full Boost
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: windows-2025
+    timeout-minutes: 50400 # ~35 zile
+
+    steps:
+      - name: Simulare configurare hardware reala
+        run: |
+          Write-Host "Host CPU: AMD Ryzen 7 (real, fara emulare)"
+          Write-Host "16GB RAM, 100GB SSD, Windows Server 2025"
+
+      - name: Verificare versiune Windows si CPU
+        run: |
+          $os = (Get-CimInstance Win32_OperatingSystem).Caption
+          $cpu = (Get-CimInstance Win32_Processor).Name
+          Write-Host "Windows OS: $os"
+          Write-Host "CPU: $cpu"
+          if ($os -notlike "*Server 2025*") { Write-Warning "Nu este Windows Server 2025 oficial." }
+
+      - name: Optimizare Windows full boost pentru gaming si performante maxime
+        run: |
+          # Dezactiveaza servicii inutile ce consuma resurse
+          Set-Service -Name WSearch -StartupType Disabled; Stop-Service -Name WSearch
+          Set-Service -Name SysMain -StartupType Disabled; Stop-Service -Name SysMain
+          # Dezactiveaza hibernare pentru economie spatiu
+          powercfg -h off
+          # Curata fisiere temporare
+          Remove-Item -Path "$env:SystemRoot\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          cleanmgr /sagerun:1
+          # Seteaza plan de energie la performanta maxima
+          powercfg /setactive SCHEME_MIN
+          # Optimizeaza efecte vizuale pentru performanta
+          Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2
+          rundll32.exe timerapi.dll,SetTimerResolution 1000,1
+          # Reduce animatii si efecte
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'UserPreferencesMask' -Value 90 12 03 80 10 00 00 00
+
+      - name: Activeaza Remote Desktop si firewall
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 0
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Creeaza userul runneradmin cu parola puternica random si sterge alti useri
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+            Upper = [char[]](65..90)
+            Lower = [char[]](97..122)
+            Number = [char[]](48..57)
+            Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+          function Generate-Password {
+            $pwd = @()
+            $pwd += $charSet.Upper | Get-Random -Count 4
+            $pwd += $charSet.Lower | Get-Random -Count 4
+            $pwd += $charSet.Number | Get-Random -Count 4
+            $pwd += $charSet.Special | Get-Random -Count 4
+            return (-join ($pwd | Sort-Object { Get-Random }))
+          }
+          # Sterge toti userii, exceptie runneradmin si Administrator
+          Get-LocalUser | Where-Object { $_.Name -ne "runneradmin" -and $_.Name -ne "Administrator" } | ForEach-Object { Remove-LocalUser $_.Name }
+          if (Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue) { Remove-LocalUser -Name "runneradmin" }
+          $pass = Generate-Password
+          $securePass = ConvertTo-SecureString $pass -AsPlainText -Force
+          New-LocalUser -Name "runneradmin" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin"
+          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
+
+      - name: Instaleaza si configureaza Tailscale VPN
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installer -Force
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-server-$env:GITHUB_RUN_ID
+
+      - name: Obține IP Tailscale pentru acces
+        run: |
+          $retry = 0
+          $tsIP = $null
+          while (-not $tsIP -and $retry -lt 10) {
+            Start-Sleep -Seconds 5
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $retry++
+          }
+          if (-not $tsIP) {
+            Write-Error "Nu s-a asignat IP Tailscale!"
+            exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Afiseaza credențialele și IP-ul RDP de conectare
+        run: |
+          Write-Host "=== INFORMAȚII ACCES RDP ==="
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host "User: $env:RDP_USER"
+          Write-Host "Parola: $env:RDP_PASS"
+          Write-Host "==========================="
+
+      - name: Menține sesiunea activă până la 35 zile (limita GitHub)
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date)] Server RDP rulează. Conectează-te cu IP Tailscale."
+            Start-Sleep -Seconds 300
+          }
+          
