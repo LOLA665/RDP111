@@ -1,0 +1,78 @@
+name: RDP Server Windows Server 2025 AMD Ryzen 7 Basic Setup
+
+on:
+  workflow_dispatch:
+
+jobs:
+  basic-rdp-setup:
+    runs-on: windows-2025
+    timeout-minutes: 50400 # ~35 zile
+
+    steps:
+      - name: Afișează hardware disponibil
+        run: |
+          Write-Host "Setări generale CPU și memorie"
+          $cpu = (Get-CimInstance Win32_Processor).Name
+          $ram = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum / 1GB
+          $disk = (Get-PSDrive c).Free / 1GB
+          Write-Host "CPU: $cpu"
+          Write-Host ("RAM total (GB): {0:N2}" -f $ram)
+          Write-Host ("Spațiu liber SSD C: (GB): {0:N2}" -f $disk)
+
+      - name: Activează Remote Desktop și firewall
+        run: |
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Creează user runneradmin cu parolă simplă
+        run: |
+          $pass = ConvertTo-SecureString "SimplePass123!" -AsPlainText -Force
+          if (Get-LocalUser runneradmin -ErrorAction SilentlyContinue) {
+            Remove-LocalUser runneradmin
+          }
+          New-LocalUser -Name "runneradmin" -Password $pass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin"
+          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASS=SimplePass123!" >> $env:GITHUB_ENV
+
+      - name: Instalează și configurează Tailscale VPN
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installer -Force
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-server-$env:GITHUB_RUN_ID
+
+      - name: Obține IP Tailscale
+        run: |
+          $retry = 0
+          $tsIP = $null
+          while (-not $tsIP -and $retry -lt 10) {
+            Start-Sleep -Seconds 5
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $retry++
+          }
+          if (-not $tsIP) {
+            Write-Error "Nu s-a asignat IP Tailscale!"
+            exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Afișează datele de conectare RDP și IP
+        run: |
+          Write-Host "=== INFORMAȚII ACCES RDP ==="
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host "User: $env:RDP_USER"
+          Write-Host "Parola: $env:RDP_PASS"
+          Write-Host "============================"
+
+      - name: Menține workflow activ până la timeout (35 zile)
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date)] Serverul RDP rulează. Conectează-te folosind IP Tailscale."
+            Start-Sleep -Seconds 300
+          }
+          
