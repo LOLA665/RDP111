@@ -1,0 +1,65 @@
+name: Complete NVIDIA Tesla T4 vGPU Setup with RDP and Tailscale No Self-hosted
+
+on:
+  workflow_dispatch:
+
+jobs:
+  vgpu-setup:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+    - name: Download NVIDIA Virtual GPU driver for Windows Server 2025
+      shell: powershell
+      run: |
+        $url = "https://us.download.nvidia.com/Windows/vgpu/18.2/vgpu_windows_server_2025_x64_18.2.exe"
+        $file = "$env:TEMP\nvidia_vgpu.exe"
+        Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
+
+    - name: Install NVIDIA Virtual GPU driver silently
+      shell: powershell
+      run: |
+        Start-Process -FilePath "$env:TEMP\nvidia_vgpu.exe" -ArgumentList "-s" -Wait
+        Remove-Item "$env:TEMP\nvidia_vgpu.exe"
+
+    - name: Restart NVIDIA services for driver activation
+      shell: powershell
+      run: |
+        Restart-Service -Name "NvContainerLocalSystem" -Force
+        Restart-Service -Name "NvTelemetryContainer" -Force
+        Restart-Service -Name "NvContainerNetworkService" -Force
+
+    - name: Verify vGPU status
+      shell: powershell
+      run: Get-PnpDevice -FriendlyName "*Tesla T4*" | Format-List Status, DriverVersion
+
+    - name: Configure RDP and create runneradmin user
+      shell: powershell
+      run: |
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        $password = ConvertTo-SecureString "Str0ngP@ssw0rd!" -AsPlainText -Force
+        New-LocalUser -Name "runneradmin" -Password $password -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin"
+
+    - name: Install and configure Tailscale VPN
+      shell: powershell
+      env:
+        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      run: |
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+        Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait
+        Remove-Item "$env:TEMP\tailscale.msi"
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=$env:COMPUTERNAME
+        $tsIP = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4)[0]
+        Write-Host "Tailscale IP: $tsIP"
+
+    - name: Keep session alive for 6 hours
+      shell: powershell
+      run: |
+        $start = Get-Date
+        while ((Get-Date) -lt $start.AddHours(6)) {
+          Start-Sleep -Seconds 60
+        }
+        
