@@ -1,0 +1,121 @@
+name: RDP Server Windows Server 2025 AMD Ryzen 7 Fixat complet
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: windows-2025
+    timeout-minutes: 50400 # ~35 zile
+
+    steps:
+      - name: Afiseaza configurare hardware
+        run: |
+          Write-Host "CPU real AMD Ryzen 7, RAM & SSD fizice disponibile din runner"
+          $cpu = (Get-CimInstance Win32_Processor).Name
+          $ramGB = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum / 1GB
+          $ssdGB = (Get-PSDrive c).Free / 1GB
+          Write-Host "CPU: $cpu"
+          Write-Host ("RAM (GB): {0:N2}" -f $ramGB)
+          Write-Host ("SSD liber (GB): {0:N2}" -f $ssdGB)
+
+      - name: Activeaza Remote Desktop si firewall
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Functie PowerShell de stergere completa a userului local si profilului
+        shell: pwsh
+        run: |
+          function Remove-LocalUserCompletely {
+            param([string]$UserName)
+            $user = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
+            if ($user) {
+              try {
+                # Dezafiliază user din grupuri dacă e necesar
+                Get-LocalGroup | ForEach-Object {
+                  if (Get-LocalGroupMember -Group $_.Name -Member $UserName -ErrorAction SilentlyContinue) {
+                    Remove-LocalGroupMember -Group $_.Name -Member $UserName -ErrorAction SilentlyContinue
+                  }
+                }
+              } catch {}
+              # Sterge userul
+              Remove-LocalUser -Name $UserName
+              # Sterge profilul userului din Windows
+              $sid = $user.SID.Value
+              $profile = Get-CimInstance -Class Win32_UserProfile | Where-Object { $_.SID -eq $sid }
+              if ($profile) {
+                $profile | Remove-CimInstance
+              }
+            }
+          }
+          # Apeleaza functia pentru runneradmin
+          Remove-LocalUserCompletely -UserName "runneradmin"
+
+      - name: Creare user runneradmin cu parola puternica random
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+            Upper = [char[]](65..90)
+            Lower = [char[]](97..122)
+            Number = [char[]](48..57)
+            Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+          }
+          function Generate-Password {
+            $pwd = @()
+            $pwd += $charSet.Upper | Get-Random -Count 4
+            $pwd += $charSet.Lower | Get-Random -Count 4
+            $pwd += $charSet.Number | Get-Random -Count 4
+            $pwd += $charSet.Special | Get-Random -Count 4
+            return (-join ($pwd | Sort-Object { Get-Random }))
+          }
+          $passwordPlain = Generate-Password
+          $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+          New-LocalUser -Name "runneradmin" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "runneradmin"
+          Write-Host "SETUP RDP USER runneradmin with password generated"
+          echo "RDP_USER=runneradmin" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$passwordPlain" >> $env:GITHUB_ENV
+
+      - name: Instaleaza si configureaza Tailscale VPN
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installer -Force
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-server-$env:GITHUB_RUN_ID
+
+      - name: Obtine IP Tailscale
+        run: |
+          $retry = 0
+          $tsIP = $null
+          while (-not $tsIP -and $retry -lt 10) {
+            Start-Sleep -Seconds 5
+            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            $retry++
+          }
+          if (-not $tsIP) {
+            Write-Error "Nu s-a asignat IP Tailscale!"
+            exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Afiseaza date de conectare RDP si IP
+        run: |
+          Write-Host "=== INFORMATII ACCES RDP ==="
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host "User: $env:RDP_USER"
+          Write-Host "Parola: $env:RDP_PASS"
+          Write-Host "============================"
+
+      - name: Pastreaza workflow activ pana la timeout GitHub (~35 zile)
+        run: |
+          while ($true) {
+            Write-Host "[$(Get-Date)] Server RDP ruleaza. Conecteaza-te cu IP Tailscale."
+            Start-Sleep -Seconds 300
+          }
+          
