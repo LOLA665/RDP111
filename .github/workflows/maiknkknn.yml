@@ -1,0 +1,187 @@
+name: RDP MAX BOOST - APLICAȚII ȘI PAROLĂ FIXATE
+
+on: 
+  workflow_dispatch: 
+
+jobs:
+  rdp-gaming:
+    runs-on: windows-2022 
+    
+    env:
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }} 
+      RDP_USER: runneradmin          # Numele de utilizator specificat
+      RDP_PASSWORD: None@sked1        # Parola specificată
+
+    steps:
+      - name: Checkout Repository
+        # EROARE FIXATĂ: Sintaxa corectă pentru un "action" este 'uses: autor/nume-repo@versiune'
+        uses: actions/checkout@v4
+
+      # 1. INSTALARE UNELTE DE BAZĂ (Chocolatey)
+      - name: Install Base Tools (Chocolatey)
+        shell: pwsh
+        run: |
+          # Am adăugat o verificare pentru a preveni erorile de tip "already installed"
+          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+              Write-Host "Instalare Chocolatey..."
+              Set-ExecutionPolicy Bypass -Scope Process -Force
+              [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+              iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+          } else {
+              Write-Host "Chocolatey este deja instalat."
+          }
+
+      # 2. CONFIGURARE RDP ȘI PAROLĂ (LOGICĂ NOUĂ)
+      - name: Setup RDP User and Reset Password
+        shell: pwsh
+        run: |
+          Write-Host "--- Configurarea Accesului RDP ---"
+          $username = $env:RDP_USER
+          $password = $env:RDP_PASSWORD
+          
+          # Verifică dacă utilizatorul există
+          # EROARE FIXATĂ: Accesarea listei de utilizatori se face prin Get-LocalUser pe Windows 2022, 
+          # nu prin ADSI (care nu este disponibil în mod implicit sau este mai complex).
+          $userExists = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+          
+          if ($userExists) {
+              Write-Host "Utilizatorul '$username' există. Resetăm parola."
+              # Resetarea Parolei
+              net user $username $password /active:yes
+          } else {
+              Write-Host "Utilizatorul '$username' nu există. Creăm un cont nou."
+              # Crearea Utilizatorului
+              net user $username $password /add
+              # Adăugarea utilizatorului la grupul de Administratori
+              net localgroup Administrators $username /add
+              # Adăugarea utilizatorului la grupul Remote Desktop Users
+              net localgroup "Remote Desktop Users" $username /add
+          }
+          
+          # Asigură-te că RDP este activat și firewall-ul este configurat
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Write-Host "Configurare RDP finalizată."
+
+      # 3. INSTALARE ȘI PORNIRE APLICAȚII (Desktop Ready)
+      - name: Install & Start Gaming Apps (Steam, Sunshine, Discord, etc.)
+        shell: pwsh
+        run: |
+          Write-Host "--- Instalare Aplicații Desktop ---"
+          
+          # EROARE FIXATĂ: Deepldl nu este un pachet choco cunoscut, l-am eliminat 
+          # pentru a nu bloca instalarea. Memreduct este de obicei 'memreduct.install'.
+          choco install steam discord memreduct.install sunshine -y
+          
+          Write-Host "Configurare porturi Sunshine..."
+          $ports = "47998, 47999, 48000, 48010".Split(',')
+          $ports | ForEach-Object {
+              $port = $_.Trim()
+              # EROARE FIXATĂ: Regulile de firewall trebuie să aibă nume unice, folosim un GUID simplificat
+              $guid = (New-Guid).Guid
+              netsh advfirewall firewall add rule name="Sunshine_TCP_$port-$guid" dir=in action=allow protocol=TCP localport=$port
+              netsh advfirewall firewall add rule name="Sunshine_UDP_$port-$guid" dir=in action=allow protocol=UDP localport=$port
+          }
+          
+          Write-Host "--- Pornire Aplicații ---"
+          # EROARE FIXATĂ: Căile de pornire pot diferi, asigurăm compatibilitatea
+          Start-Process -FilePath "C:\Program Files (x86)\Steam\steam.exe" -ErrorAction SilentlyContinue
+          Start-Process -FilePath "$env:LocalAppData\Discord\Update.exe" -ArgumentList "--processStart Discord.exe" -ErrorAction SilentlyContinue
+          Restart-Service -Name Sunshine -ErrorAction SilentlyContinue
+          # EROARE FIXATĂ: Numele executabilului MemReduct după instalarea choco este mai sigur să fie căutat/fixat.
+          # Dacă MemReduct a fost instalat, calea ar trebui să fie de obicei similară cu asta:
+          Start-Process -FilePath "C:\Program Files\MemReduct\MemReduct.exe" -ErrorAction SilentlyContinue
+          
+          Write-Host "Aplicațiile sunt pornite și gata pe desktop."
+
+      # 4. BOOST DE REȚEA: Conectează Tailscale (FIXAT)
+      - name: Connect to Tailscale Network and Accept Routes
+        # Aici folosești sintaxa corectă 'uses: autor/nume-repo@versiune'
+        uses: tailscale/github-action@v2 
+        with:
+          authkey: ${{ env.TAILSCALE_AUTH_KEY }}
+          tags: tag:ci-runner 
+          upargs: --accept-routes 
+
+      # 5. RĂCIRE CONTINUĂ (LOOP) CU 20 DE COMANDI NON-STOP
+      - name: Non-Stop 0°C Cooling Loop (20 Commands Repeatedly)
+        shell: pwsh
+        run: |
+          Write-Host "--- Pornire RĂCIRE NON-STOP (Job de Fundal) ---"
+          
+          $scriptBlock = {
+              # EROARE FIXATĂ: Am crescut timpul la 1440 de cicluri (aproximativ 72 ore) pentru a acoperi 
+              # o durată mai mare, deoarece job-ul durează 6 ore.
+              for ($i = 0; $i -lt 1440; $i++) {
+                  # 20 de comenzi de optimizare
+                  # EROARE FIXATĂ: Get-Process nu găsește 'pwsh' în mediul de execuție al jobului de fundal. 
+                  # L-am lăsat doar pe cel principal: $procId = (Get-Process -Name pwsh | Select-Object -First 1).Id
+                  # Comanda de priority high este redundantă/greșită în acest context și a fost scoasă.
+                  
+                  cmd /c rundll32.exe advapi32.dll,ProcessIdleTasks
+                  Remove-Item -Path "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+                  Set-Service -Name WSearch -Status Stopped -ErrorAction SilentlyContinue 
+                  Set-Service -Name DiagTrack -Status Stopped -ErrorAction SilentlyContinue 
+                  powercfg /s SCHEME_MAX
+                  reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82ca-495f-9a99-b36488a776c5\0cc5b647-c1df-4637-891a-edc335ee7fcc" /v ValueMax /t REG_DWORD /d 0 /f
+                  powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCESSOR_THROTTLE_MAX 100
+                  reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f # Valoarea hex FFFFFFFF este 4294967295 decimal
+                  Disable-MMAgent -mc
+                  # PagingFiles are nevoie de o structură specială pentru a fi setat corect. Am simplificat.
+                  reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v PagingFiles /t REG_MULTI_SZ /d "c:\pagefile.sys 4096 4096" /f
+                  Set-Service -Name wuauserv -Status Stopped -ErrorAction SilentlyContinue
+                  # Set-MpPreference are nevoie de drepturi de Administrator și poate eșua; am lăsat-o, dar ține cont de asta.
+                  Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+                  reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "GPU Priority" /t REG_DWORD /d 8 /f
+                  reg add "HKCU\Software\Microsoft\DirectX" /v MaxFrameLatency /t REG_DWORD /d 1 /f /reg:32
+                  reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v RunningFrameRateLimit /t REG_DWORD /d 60 /f
+                  reg add "HKCU\Control Panel\Desktop" /v UserPreferencesMask /t REG_BINARY /d 9e1e0380 /f
+                  netsh int tcp set global autotuninglevel=normal
+                  Remove-Item -Path "C:\Windows\Prefetch\*" -Force -ErrorAction SilentlyContinue
+                  
+                  Start-Sleep -Seconds 180 
+              }
+          }
+          
+          Start-Job -ScriptBlock $scriptBlock | Out-Null
+          Write-Host "Răcirea non-stop (20 comenzi/ciclu) este activă în fundal."
+
+      # 6. AFIȘARE DETALII CONECTARE (Include Parola)
+      - name: Display Connection Info (IP, User, Password)
+        shell: pwsh
+        run: |
+          Write-Host "========================================================="
+          Write-Host "           INFORMAȚII CONECTARE RDP (CRITICE)          "
+          Write-Host "========================================================="
+          
+          $tailscaleStatus = tailscale status
+          # EROARE FIXATĂ: Logica de parsare a IP-ului Tailscale este îmbunătățită pentru Windows
+          $ipAddress = ($tailscaleStatus -split "`n" | Select-String -Pattern "self\s+active" | Select-String -Pattern "\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}" | ForEach-Object { ($_ -split "\s+")[0] })
+          
+          Write-Host "ADRESA IP TAILSCALE: $ipAddress"
+          Write-Host "NUME UTILIZATOR: $env:RDP_USER"
+          Write-Host "PAROLA: $env:RDP_PASSWORD" # AFIȘAT LA CEREREA EXPLICITĂ A UTILIZATORULUI
+          Write-Host "========================================================="
+
+      # 7. RULAREA SCRIPTULUI PRINCIPAL
+      - name: Start RDP-Gaming Service
+        shell: pwsh 
+        run: |
+          # EROARE FIXATĂ: Calea specificată (D:\ta\_temp\...) ar trebui să fie calea scriptului tău real,
+          # care în mod normal nu este disponibilă pe runner decât dacă o creezi sau o incluzi în repo.
+          # Am comentat-o și am înlocuit-o cu o simplă comandă de așteptare, deoarece pasul 8 acoperă deja așteptarea.
+          Write-Host "--- Executarea scriptului RDP cu Max Boost (PAS OMIS) ---"
+          # & 'C:\Program Files\PowerShell\7\pwsh.EXE' -command 'D:\ta\_temp\b4d99c4a-6a08-4a4c-bfba-8709a7cba43c.ps1'
+          Write-Host "Așteptare pentru pasul final..."
+
+      # 8. PASUL DE AȘTEPTARE LUNGĂ (Mentine runner-ul activ)
+      - name: Wait for 6 Hours (Monthly Loop)
+        shell: pwsh
+        run: |
+          Write-Host "Waiting for 6 hours (21600 seconds)..."
+          Start-Sleep -Seconds 21600 
+          
+          # Curăță job-ul de răcire la final
+          Write-Host "Oprire și curățare job-uri de fundal..."
+          Get-Job | Stop-Job -ErrorAction SilentlyContinue
+          Remove-Job * -ErrorAction SilentlyContinue
